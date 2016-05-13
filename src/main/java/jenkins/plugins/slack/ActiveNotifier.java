@@ -315,9 +315,6 @@ public class ActiveNotifier implements FineGrainedNotifier {
 
 
     public static class StatusMessageBuilder {
-
-        private static final String BACK_TO_NORMAL_STATUS_MESSAGE = "Back to normal";
-
         private StringBuffer message;
         private SlackNotifier notifier;
         private AbstractBuild build;
