@@ -257,17 +257,18 @@ public class ActiveNotifier implements FineGrainedNotifier {
     }
 
     String getBuildStatusMessage(ResultMessageType type, AbstractBuild r,
-                                               boolean includeTestSummary, boolean includeCustomMessage) {
+                                 boolean includeTestSummary, boolean includeCustomMessage) {
 
         StatusMessageBuilder message = new StatusMessageBuilder(notifier, r);
+        // Add Build #XXX
+        message.append("Build").append(' ').appendBuildLink();
 
         Map<String, String> variables = r.getBuildVariables();
-        message.append("Build")
-                .append(' ')
-                .appendBuildLink()
-                .append(' ')
-                .append("of ")
-                .append(variables.get(GHPRB_SOURCE_BRANCH));
+        if (variables.containsKey(GHPRB_SOURCE_BRANCH)) {
+            message.append(" of ").append(variables.get(GHPRB_SOURCE_BRANCH));
+        } else {
+            message.append(" of ").append(r.getProject().getFullDisplayName());
+        }
 
         if (variables.containsKey(GHPRB_PULL_ID)) {
             message.append(" in PR ");
@@ -311,7 +312,6 @@ public class ActiveNotifier implements FineGrainedNotifier {
         }
         return message.toString();
     }
-
 
 
     public static class StatusMessageBuilder {
