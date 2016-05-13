@@ -270,19 +270,27 @@ public class ActiveNotifier implements FineGrainedNotifier {
             message.append(" of ").append(r.getProject().getFullDisplayName());
 
 
-            List causes = r.getCauses();
+            List<Cause> causes = r.getCauses();
+
+
             if (causes.size() > 0) {
                 message.append(" triggered by ");
-                boolean needsComma = false;
-                for (Object cause : causes) {
-                    String causeString = cause.toString();
-                    if (causeString != null && causeString.length() > 0) {
-                        if (needsComma) {
-                            message.append(", ");
-                        }
 
-                        message.append(causeString);
-                        needsComma = true;
+                // To prevent duplicates, let's keep a set of marked causes.
+                Set<Cause> marked = new HashSet<Cause>();
+                for (Cause cause : causes) {
+                    if (!marked.contains(cause)) {
+                        String causeString = cause.getShortDescription();
+                        if (causeString != null && causeString.length() > 0) {
+                            boolean needsComma = marked.size() > 0;
+
+                            if (needsComma) {
+                                message.append(", ");
+                            }
+
+                            message.append(causeString);
+                            marked.add(cause);
+                        }
                     }
                 }
             }
