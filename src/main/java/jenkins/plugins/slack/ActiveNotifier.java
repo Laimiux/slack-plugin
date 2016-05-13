@@ -281,7 +281,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
         switch (type) {
             case SUCCESS:
             case BACK_TO_NORMAL:
-                message.append("succeeded");
+                message.append("passed");
                 break;
             case FAILURE:
             case REPEATED_FAILURE:
