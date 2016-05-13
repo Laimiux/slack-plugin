@@ -268,6 +268,24 @@ public class ActiveNotifier implements FineGrainedNotifier {
             message.append(" of ").append(variables.get(GHPRB_SOURCE_BRANCH));
         } else {
             message.append(" of ").append(r.getProject().getFullDisplayName());
+
+
+            List causes = r.getCauses();
+            if (causes.size() > 0) {
+                message.append(" triggered by ");
+                boolean needsComma = false;
+                for (Object cause : causes) {
+                    String causeString = cause.toString();
+                    if (causeString != null && causeString.length() > 0) {
+                        if (needsComma) {
+                            message.append(", ");
+                        }
+
+                        message.append(causeString);
+                        needsComma = true;
+                    }
+                }
+            }
         }
 
         if (variables.containsKey(GHPRB_PULL_ID)) {
