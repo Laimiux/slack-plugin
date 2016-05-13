@@ -19,10 +19,7 @@ import hudson.util.LogTaskListener;
 import org.apache.commons.lang.StringUtils;
 
 import java.io.IOException;
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 import java.util.logging.Logger;
 
 import static java.util.logging.Level.INFO;
@@ -32,6 +29,10 @@ import static java.util.logging.Level.SEVERE;
 public class ActiveNotifier implements FineGrainedNotifier {
 
     private static final Logger logger = Logger.getLogger(SlackListener.class.getName());
+    public static final String GHPRB_SOURCE_BRANCH = "ghprbSourceBranch";
+    public static final String GHPRB_PULL_ID = "ghprbPullId";
+    public static final String GHPRB_PULL_LINK = "ghprbPullLink";
+    public static final String GHPRB_ACTUAL_COMMIT_AUTHOR = "ghprbActualCommitAuthor";
 
     SlackNotifier notifier;
     BuildListener listener;
@@ -70,7 +71,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
         if (changes != null) {
             notifyStart(build, changes);
         } else {
-            notifyStart(build, getBuildStatusMessage(build, false, notifier.includeCustomMessage()));
+            notifyStart(build, getStartedMessage(build, false, notifier.includeCustomMessage()));
         }
     }
 
@@ -95,25 +96,66 @@ public class ActiveNotifier implements FineGrainedNotifier {
             previousBuild = previousBuild.getPreviousCompletedBuild();
         } while (previousBuild != null && previousBuild.getResult() == Result.ABORTED);
         Result previousResult = (previousBuild != null) ? previousBuild.getResult() : Result.SUCCESS;
-        if ((result == Result.ABORTED && notifier.getNotifyAborted())
-                || (result == Result.FAILURE //notify only on single failed build
-                    && previousResult != Result.FAILURE
-                    && notifier.getNotifyFailure())
-                || (result == Result.FAILURE //notify only on repeated failures
-                    && previousResult == Result.FAILURE
-                    && notifier.getNotifyRepeatedFailure())
-                || (result == Result.NOT_BUILT && notifier.getNotifyNotBuilt())
-                || (result == Result.SUCCESS
-                    && (previousResult == Result.FAILURE || previousResult == Result.UNSTABLE)
-                    && notifier.getNotifyBackToNormal())
-                || (result == Result.SUCCESS && notifier.getNotifySuccess())
-                || (result == Result.UNSTABLE && notifier.getNotifyUnstable())) {
-            getSlack(r).publish(getBuildStatusMessage(r, notifier.includeTestSummary(),
-                    notifier.includeCustomMessage()), getBuildColor(r));
+
+
+        ResultMessageType messageType = getMessageType(result, previousResult, notifier);
+        if (messageType != ResultMessageType.NO_MESSAGE) {
+            String message = getBuildStatusMessage(
+                    messageType, r, notifier.includeTestSummary(), notifier.includeCustomMessage());
+
+            // Send the message
+            String buildColor = getBuildColor(r);
+            getSlack(r).publish(message, buildColor);
             if (notifier.getCommitInfoChoice().showAnything()) {
-                getSlack(r).publish(getCommitList(r), getBuildColor(r));
+                getSlack(r).publish(getCommitList(r), buildColor);
             }
         }
+    }
+
+    ResultMessageType getMessageType(Result result, Result previousResult, SlackNotifier notifier) {
+        if (result == Result.ABORTED && notifier.getNotifyAborted()) {
+            return ResultMessageType.ABORTED;
+        }
+
+        // Single failure
+        if (result == Result.FAILURE && previousResult != Result.FAILURE && notifier.getNotifyFailure()) {
+            return ResultMessageType.FAILURE;
+        }
+
+        if (result == Result.FAILURE && notifier.getNotifyRepeatedFailure()) {
+            return ResultMessageType.REPEATED_FAILURE;
+        }
+
+        if (result == Result.NOT_BUILT && notifier.getNotifyNotBuilt()) {
+            return ResultMessageType.NOT_BUILT;
+        }
+
+        if (result == Result.SUCCESS
+                && (previousResult == Result.FAILURE || previousResult == Result.UNSTABLE)
+                && notifier.getNotifyBackToNormal()) {
+            return ResultMessageType.BACK_TO_NORMAL;
+        }
+
+        if (result == Result.SUCCESS && notifier.getNotifySuccess()) {
+            return ResultMessageType.SUCCESS;
+        }
+
+        if (result == Result.UNSTABLE && notifier.getNotifyUnstable()) {
+            return ResultMessageType.UNSTABLE;
+        }
+
+        return ResultMessageType.NO_MESSAGE;
+    }
+
+    enum ResultMessageType {
+        ABORTED,
+        SUCCESS,
+        BACK_TO_NORMAL,
+        FAILURE,
+        REPEATED_FAILURE,
+        NOT_BUILT,
+        UNSTABLE,
+        NO_MESSAGE
     }
 
     String getChanges(AbstractBuild r, boolean includeCustomMessage) {
@@ -161,14 +203,14 @@ public class ActiveNotifier implements FineGrainedNotifier {
         }
         if (entries.isEmpty()) {
             logger.info("Empty change...");
-            Cause.UpstreamCause c = (Cause.UpstreamCause)r.getCause(Cause.UpstreamCause.class);
+            Cause.UpstreamCause c = (Cause.UpstreamCause) r.getCause(Cause.UpstreamCause.class);
             if (c == null) {
                 return "No Changes.";
             }
             String upProjectName = c.getUpstreamProject();
             int buildNumber = c.getUpstreamBuild();
             AbstractProject project = Hudson.getInstance().getItemByFullName(upProjectName, AbstractProject.class);
-            AbstractBuild upBuild = (AbstractBuild)project.getBuildByNumber(buildNumber);
+            AbstractBuild upBuild = (AbstractBuild) project.getBuildByNumber(buildNumber);
             return getCommitList(upBuild);
         }
         Set<String> commits = new HashSet<String>();
@@ -200,7 +242,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
         }
     }
 
-    String getBuildStatusMessage(AbstractBuild r, boolean includeTestSummary, boolean includeCustomMessage) {
+    String getStartedMessage(AbstractBuild r, boolean includeTestSummary, boolean includeCustomMessage) {
         MessageBuilder message = new MessageBuilder(notifier, r);
         message.appendStatusMessage();
         message.appendDuration();
@@ -214,18 +256,161 @@ public class ActiveNotifier implements FineGrainedNotifier {
         return message.toString();
     }
 
+    String getBuildStatusMessage(ResultMessageType type, AbstractBuild r,
+                                               boolean includeTestSummary, boolean includeCustomMessage) {
+
+        StatusMessageBuilder message = new StatusMessageBuilder(notifier, r);
+
+        Map<String, String> variables = r.getBuildVariables();
+        message.append("Build")
+                .append(' ')
+                .appendBuildLink()
+                .append(' ')
+                .append("of ")
+                .append(variables.get(GHPRB_SOURCE_BRANCH));
+
+        if (variables.containsKey(GHPRB_PULL_ID)) {
+            message.append(" in PR ");
+            message.appendLink(variables.get(GHPRB_PULL_LINK), "#" + variables.get(GHPRB_PULL_ID));
+            message.append(" by ");
+            message.append(variables.get(GHPRB_ACTUAL_COMMIT_AUTHOR));
+        }
+
+        switch (type) {
+            case SUCCESS:
+            case BACK_TO_NORMAL:
+                message.append("succeeded");
+                break;
+            case FAILURE:
+            case REPEATED_FAILURE:
+                message.append("failed");
+                break;
+            case ABORTED:
+                message.append("aborted");
+                break;
+            case NOT_BUILT:
+                message.append("failed to build");
+                break;
+            case UNSTABLE:
+                message.append("is unstable");
+                break;
+            default:
+                message.append("something weird happened");
+                break;
+        }
+
+        message.append(" after ");
+        message.append(r.getDurationString());
+
+        if (includeTestSummary) {
+            message.appendTestSummary();
+        }
+        if (includeCustomMessage) {
+            message.appendCustomMessage();
+        }
+        return message.toString();
+    }
+
+
+
+    public static class StatusMessageBuilder {
+
+        private static final String BACK_TO_NORMAL_STATUS_MESSAGE = "Back to normal";
+
+        private StringBuffer message;
+        private SlackNotifier notifier;
+        private AbstractBuild build;
+
+        public StatusMessageBuilder(SlackNotifier notifier, AbstractBuild build) {
+            this.notifier = notifier;
+            this.message = new StringBuffer();
+            this.build = build;
+        }
+
+        public StatusMessageBuilder appendLink(String link, String text) {
+            message.append('<')
+                    .append(link)
+                    .append('|')
+                    .append(text)
+                    .append('>');
+            return this;
+        }
+
+        public StatusMessageBuilder append(String string) {
+            message.append(this.escape(string));
+            return this;
+        }
+
+        public StatusMessageBuilder append(Object string) {
+            message.append(this.escape(string.toString()));
+            return this;
+        }
+
+        public StatusMessageBuilder appendBuildLink() {
+            return appendLink(getBuildUrl(), "#" + build.getId());
+        }
+
+        private String getBuildUrl() {
+            return notifier.getBuildServerUrl() + build.getUrl();
+        }
+
+        public StatusMessageBuilder appendTestSummary() {
+            AbstractTestResultAction<?> action = this.build
+                    .getAction(AbstractTestResultAction.class);
+            if (action != null) {
+                int total = action.getTotalCount();
+                int failed = action.getFailCount();
+                int skipped = action.getSkipCount();
+                message.append("\nTest Status:\n");
+                message.append("\tPassed: " + (total - failed - skipped));
+                message.append(", Failed: " + failed);
+                message.append(", Skipped: " + skipped);
+            } else {
+                message.append("\nNo Tests found.");
+            }
+            return this;
+        }
+
+        public StatusMessageBuilder appendCustomMessage() {
+            String customMessage = notifier.getCustomMessage();
+            EnvVars envVars = new EnvVars();
+            try {
+                envVars = build.getEnvironment(new LogTaskListener(logger, INFO));
+            } catch (IOException e) {
+                logger.log(SEVERE, e.getMessage(), e);
+            } catch (InterruptedException e) {
+                logger.log(SEVERE, e.getMessage(), e);
+            }
+            message.append("\n");
+            message.append(envVars.expand(customMessage));
+            return this;
+        }
+
+        public String escape(String string) {
+            string = string.replace("&", "&amp;");
+            string = string.replace("<", "&lt;");
+            string = string.replace(">", "&gt;");
+
+            return string;
+        }
+
+        public String toString() {
+            return message.toString();
+        }
+    }
+
     public static class MessageBuilder {
 
         private static final String STARTING_STATUS_MESSAGE = "Starting...",
-                                    BACK_TO_NORMAL_STATUS_MESSAGE = "Back to normal",
-                                    STILL_FAILING_STATUS_MESSAGE = "Still Failing",
-                                    SUCCESS_STATUS_MESSAGE = "Success",
-                                    FAILURE_STATUS_MESSAGE = "Failure",
-                                    ABORTED_STATUS_MESSAGE = "Aborted",
-                                    NOT_BUILT_STATUS_MESSAGE = "Not built",
-                                    UNSTABLE_STATUS_MESSAGE = "Unstable",
-                                    UNKNOWN_STATUS_MESSAGE = "Unknown";
-        
+                BACK_TO_NORMAL_STATUS_MESSAGE = "Back to normal",
+                STILL_FAILING_STATUS_MESSAGE = "Still Failing",
+                SUCCESS_STATUS_MESSAGE = "Success",
+                FAILURE_STATUS_MESSAGE = "Failure",
+                ABORTED_STATUS_MESSAGE = "Aborted",
+                NOT_BUILT_STATUS_MESSAGE = "Not built",
+                UNSTABLE_STATUS_MESSAGE = "Unstable",
+                UNKNOWN_STATUS_MESSAGE = "Unknown";
+
         private StringBuffer message;
         private SlackNotifier notifier;
         private AbstractBuild build;
@@ -259,7 +444,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
              * should be failure -> success (and therefore back to normal) not aborted -> success. 
              */
             Run lastNonAbortedBuild = previousBuild;
-            while(lastNonAbortedBuild != null && lastNonAbortedBuild.getResult() == Result.ABORTED) {
+            while (lastNonAbortedBuild != null && lastNonAbortedBuild.getResult() == Result.ABORTED) {
                 lastNonAbortedBuild = lastNonAbortedBuild.getPreviousBuild();
             }
             
@@ -267,7 +452,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
             /* If all previous builds have been aborted, then use 
              * SUCCESS as a default status so an aborted message is sent
              */
-            if(lastNonAbortedBuild == null) {
+            if (lastNonAbortedBuild == null) {
                 previousResult = Result.SUCCESS;
             } else {
                 previousResult = lastNonAbortedBuild.getResult();
@@ -278,7 +463,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
              * "Back to normal"
              */
             if (result == Result.SUCCESS
-                    && (previousResult == Result.FAILURE || previousResult == Result.UNSTABLE) 
+                    && (previousResult == Result.FAILURE || previousResult == Result.UNSTABLE)
                     && buildHasSucceededBefore) {
                 return BACK_TO_NORMAL_STATUS_MESSAGE;
             }
@@ -330,7 +515,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
         public MessageBuilder appendDuration() {
             message.append(" after ");
             String durationString;
-            if(message.toString().contains(BACK_TO_NORMAL_STATUS_MESSAGE)){
+            if (message.toString().contains(BACK_TO_NORMAL_STATUS_MESSAGE)) {
                 durationString = createBackToNormalDurationString();
             } else {
                 durationString = build.getDurationString();
@@ -370,8 +555,8 @@ public class ActiveNotifier implements FineGrainedNotifier {
             message.append(envVars.expand(customMessage));
             return this;
         }
-        
-        private String createBackToNormalDurationString(){
+
+        private String createBackToNormalDurationString() {
             Run previousSuccessfulBuild = build.getPreviousSuccessfulBuild();
             long previousSuccessStartTime = previousSuccessfulBuild.getStartTimeInMillis();
             long previousSuccessDuration = previousSuccessfulBuild.getDuration();
