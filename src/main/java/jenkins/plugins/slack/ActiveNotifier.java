@@ -276,6 +276,7 @@ public class ActiveNotifier implements FineGrainedNotifier {
             message.append(variables.get(GHPRB_ACTUAL_COMMIT_AUTHOR));
         }
 
+        message.append(" ");
         switch (type) {
             case SUCCESS:
             case BACK_TO_NORMAL:
